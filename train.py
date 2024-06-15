@@ -16,6 +16,7 @@ from utils.misc import NativeScalerWithGradNormCount as NativeScaler
 import swin_mae
 from utils.engine_pretrain import train_one_epoch
 
+import wandb
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE pre-training', add_help=False)
@@ -108,6 +109,8 @@ def main(args):
     model.to(device)
     model_without_ddp = model
 
+    #wandb.watch(model)
+
     # Set optimizer
     param_groups = [p for p in model_without_ddp.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, weight_decay=5e-2, betas=(0.9, 0.95))  # 原来是5E-2
@@ -133,6 +136,13 @@ def main(args):
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      'epoch': epoch, }
 
+        wandb.log(
+            {
+                "epoch_lr": log_stats["train_lr"],
+                "epoch_loss": log_stats["train_loss"]
+            }
+        )
+
         if args.output_dir and misc.is_main_process():
             if log_writer is not None:
                 log_writer.flush()
@@ -143,6 +153,33 @@ def main(args):
 if __name__ == '__main__':
     arg = get_args_parser()
     arg = arg.parse_args()
+
+    # start a new wandb run to track this script
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="Swin-MAE eval project",
+
+        # track hyperparameters and run metadata
+        config={
+            "model" : arg.model,
+            "mask_ratio": arg.mask_ratio,
+            "epochs": arg.epochs,
+            "batch_size": arg.batch_size,
+            "learning_rate": arg.lr,
+            "min_lr": arg.min_lr,
+            "norm_pix_loss": arg.norm_pix_loss,
+            "weight_decay": arg.weight_decay,
+            "architecture": "Swin-MAE",
+            "dataset": "GSI Dataset",
+            "data_path": arg.data_path,
+            "input_size": arg.input_size,
+            "output_dir": arg.output_dir,
+            "log_dir": arg.log_dir
+        }
+    )
+
     if arg.output_dir:
         Path(arg.output_dir).mkdir(parents=True, exist_ok=True)
     main(arg)
+
+    wandb.finish()
