@@ -16,6 +16,7 @@ from utils.misc import NativeScalerWithGradNormCount as NativeScaler
 import swin_mae
 from utils.engine_pretrain import train_one_epoch
 
+import GSI_Dataset
 import wandb
 
 def get_args_parser():
@@ -28,6 +29,7 @@ def get_args_parser():
     parser.add_argument('--checkpoint_encoder', default='', type=str)
     parser.add_argument('--checkpoint_decoder', default='', type=str)
     parser.add_argument('--data_path', default=r'C:\文件\数据集\腮腺对比学习数据集\三通道合并\concat\train', type=str)  # fill in the dataset path here
+    parser.add_argument('--data_class', default=r'ImageFolder', type=str)
     parser.add_argument('--mask_ratio', default=0.75, type=float,
                         help='Masking ratio (percentage of removed patches).')
 
@@ -65,7 +67,7 @@ def get_args_parser():
     parser.add_argument('--pin_mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.set_defaults(pin_mem=True)
-
+    parser.add_argument('--wan_db', default=False)
     return parser
 
 
@@ -79,15 +81,27 @@ def main(args):
     device = torch.device(args.device)
     cudnn.benchmark = True
 
-    # Defining data augmentation
-    transform_train = transforms.Compose([
-        transforms.Resize((args.input_size, args.input_size)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor()
-    ])
+
 
     # Set dataset
-    dataset_train = datasets.ImageFolder(args.data_path, transform=transform_train)
+    if args.data_class == 'GSI_Dataset':
+        # Defining data augmentation
+        transform_train = transforms.Compose([
+            transforms.Resize((args.input_size, args.input_size)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.ToTensor()
+        ])
+        dataset_train = GSI_Dataset.GSI_Dataset(args.data_path, transform=transform_train)
+    else:
+        # Defining data augmentation
+        transform_train = transforms.Compose([
+            transforms.Resize((args.input_size, args.input_size)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor()
+        ])
+        dataset_train = datasets.ImageFolder(args.data_path, transform=transform_train)
+        
     sampler_train = torch.utils.data.RandomSampler(dataset_train)
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, sampler=sampler_train,
@@ -100,7 +114,7 @@ def main(args):
     # Log output
     if args.log_dir is not None:
         os.makedirs(args.log_dir, exist_ok=True)
-        log_writer = SummaryWriter()
+        log_writer = SummaryWriter(log_dir=args.log_dir)
     else:
         log_writer = None
 
@@ -136,12 +150,13 @@ def main(args):
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      'epoch': epoch, }
 
-        wandb.log(
-            {
-                "epoch_lr": log_stats["train_lr"],
-                "epoch_loss": log_stats["train_loss"]
-            }
-        )
+        if args.wan_db :
+            wandb.log(
+                {
+                    "epoch_lr": log_stats["train_lr"],
+                    "epoch_loss": log_stats["train_loss"]
+                }
+            )
 
         if args.output_dir and misc.is_main_process():
             if log_writer is not None:
@@ -155,31 +170,35 @@ if __name__ == '__main__':
     arg = arg.parse_args()
 
     # start a new wandb run to track this script
-    wandb.init(
-        # set the wandb project where this run will be logged
-        project="Swin-MAE eval project",
+    if arg.wan_db :
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project="Swin-MAE eval project",
 
-        # track hyperparameters and run metadata
-        config={
-            "model" : arg.model,
-            "mask_ratio": arg.mask_ratio,
-            "epochs": arg.epochs,
-            "batch_size": arg.batch_size,
-            "learning_rate": arg.lr,
-            "min_lr": arg.min_lr,
-            "norm_pix_loss": arg.norm_pix_loss,
-            "weight_decay": arg.weight_decay,
-            "architecture": "Swin-MAE",
-            "dataset": "GSI Dataset",
-            "data_path": arg.data_path,
-            "input_size": arg.input_size,
-            "output_dir": arg.output_dir,
-            "log_dir": arg.log_dir
-        }
-    )
+            dir = arg.log_dir,
+
+            # track hyperparameters and run metadata
+            config={
+                "model" : arg.model,
+                "mask_ratio": arg.mask_ratio,
+                "epochs": arg.epochs,
+                "batch_size": arg.batch_size,
+                "learning_rate": arg.lr,
+                "min_lr": arg.min_lr,
+                "norm_pix_loss": arg.norm_pix_loss,
+                "weight_decay": arg.weight_decay,
+                "architecture": "Swin-MAE",
+                "dataset": "GSI Dataset",
+                "data_path": arg.data_path,
+                "input_size": arg.input_size,
+                "output_dir": arg.output_dir,
+                "log_dir": arg.log_dir
+            }
+        )
 
     if arg.output_dir:
         Path(arg.output_dir).mkdir(parents=True, exist_ok=True)
     main(arg)
 
-    wandb.finish()
+    if arg.wan_db :
+        wandb.finish()
