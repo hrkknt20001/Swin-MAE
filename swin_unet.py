@@ -1,3 +1,5 @@
+from functools import partial
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
@@ -450,3 +452,12 @@ class SwinUnet(nn.Module):
         x = rearrange(x, 'B H W C -> B C H W')
         x = self.head(x)
         return x
+
+def swin_unet(**kwargs):
+    model = SwinUnet(
+        patch_size=4, in_chans=3, num_classes=2,
+        depths=(2, 2, 2, 2), embed_dim=96, num_heads=(3, 6, 12, 24),
+        window_size=7, qkv_bias=True, mlp_ratio=4,
+        drop_path_rate=0.1, drop_rate=0, attn_drop_rate=0,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model

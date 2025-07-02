@@ -13,11 +13,18 @@ import torchvision.datasets as datasets
 
 import utils.misc as misc
 from utils.misc import NativeScalerWithGradNormCount as NativeScaler
-import swin_mae
-from utils.engine_pretrain import train_one_epoch
+#import swin_mae
+import swin_unet
+from utils.engine_pretrain import train_one_epoch_unet, eval_one_epoch_unet
 
 import GSI_Dataset
 import wandb
+
+from PIL import Image
+import matplotlib.pyplot as plt
+
+import albumentations as albu
+import albumentations.pytorch
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE pre-training', add_help=False)
@@ -28,20 +35,19 @@ def get_args_parser():
     parser.add_argument('--save_freq', default=400, type=int)
     parser.add_argument('--checkpoint_encoder', default='', type=str)
     parser.add_argument('--checkpoint_decoder', default='', type=str)
-    parser.add_argument('--data_path', default=r'C:\文件\数据集\腮腺对比学习数据集\三通道合并\concat\train', type=str)  # fill in the dataset path here
+    parser.add_argument('--data_path_train', default=r'C:\文件\数据集\腮腺对比学习数据集\三通道合并\concat\train', type=str)  # fill in the dataset path here
+    parser.add_argument('--data_path_eval', default=r'C:\文件\数据集\腮腺对比学习数据集\三通道合并\concat\train', type=str)  # fill in the dataset path here
+    parser.add_argument('--target_class', default=r'17_Road', type=str)
     parser.add_argument('--data_class', default=r'ImageFolder', type=str)
+    parser.add_argument('--num_classes', default=2, type=int,
+                        help='number of classes')
     parser.add_argument('--data_augment', default=None, type=str)
-    parser.add_argument('--mask_ratio', default=0.75, type=float,
-                        help='Masking ratio (percentage of removed patches).')
 
     # model parameters
-    parser.add_argument('--model', default='swin_mae', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='swin_unet', type=str, metavar='MODEL',
                         help='Name of model to train')
     parser.add_argument('--input_size', default=224, type=int,
                         help='images input size')
-    parser.add_argument('--norm_pix_loss', action='store_true',
-                        help='Use (per-patch) normalized pixels as targets for computing loss')
-    parser.set_defaults(norm_pix_loss=False)
 
     # optimizer parameters
     parser.add_argument('--accum_iter', default=1, type=int)
@@ -51,7 +57,7 @@ def get_args_parser():
                         help='learning rate (absolute lr)')
     parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
-    parser.add_argument('--warmup_epochs', type=int, default=2, metavar='N',
+    parser.add_argument('--warmup_epochs', type=int, default=10, metavar='N',
                         help='epochs to warmup LR')
 
     # other parameters
@@ -88,7 +94,9 @@ def main(args):
     if args.data_class == 'GSI_Dataset':
         # Defining data augmentation
         transform_train = GSI_Dataset.get_augmentation(args.data_augment)
-        dataset_train = GSI_Dataset.GSI_Dataset(args.data_path, transform=transform_train)
+        dataset_train = GSI_Dataset.GSI_DatasetWithMask(args.data_path_train, args.target_class, transform=transform_train)
+        transform_eval = GSI_Dataset.get_augmentation('Original')
+        dataset_eval = GSI_Dataset.GSI_DatasetWithMask(args.data_path_eval, args.target_class, transform=transform_eval)
     else:
         # Defining data augmentation
         transform_train = transforms.Compose([
@@ -106,6 +114,14 @@ def main(args):
         pin_memory=args.pin_mem,
         drop_last=True
     )
+    sampler_eval = torch.utils.data.RandomSampler(dataset_eval)    
+    data_loader_eval = torch.utils.data.DataLoader(
+        dataset_eval, sampler=sampler_eval,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=True
+    )
 
     # Log output
     if args.log_dir is not None:
@@ -115,7 +131,7 @@ def main(args):
         log_writer = None
 
     # Set model
-    model = swin_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss, mask_ratio=args.mask_ratio)
+    model = swin_unet.__dict__[args.model]()
     model.to(device)
     model_without_ddp = model
 
@@ -132,12 +148,20 @@ def main(args):
     # Start the training process
     print(f"Start training for {args.epochs} epochs")
     for epoch in range(args.start_epoch, args.epochs):
-        train_stats = train_one_epoch(
+        train_stats = train_one_epoch_unet(
             model, data_loader_train,
             optimizer, device, epoch, loss_scaler,
             log_writer=log_writer,
             args=args
         )
+
+        eval_stats = eval_one_epoch_unet(
+            model, data_loader_eval,
+            device, epoch,         
+            log_writer=log_writer,
+            args=args
+        )
+
         if args.output_dir and ((epoch + 1) % args.save_freq == 0 or epoch + 1 == args.epochs):
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
@@ -165,19 +189,18 @@ if __name__ == '__main__':
     arg = get_args_parser()
     arg = arg.parse_args()
 
-    param={
+    param = {
         "model" : arg.model,
-        "mask_ratio": arg.mask_ratio,
         "epochs": arg.epochs,
         "batch_size": arg.batch_size,
         "learning_rate": arg.lr,
         "min_lr": arg.min_lr,
-        "norm_pix_loss": arg.norm_pix_loss,
         "weight_decay": arg.weight_decay,
         "architecture": "Swin-MAE",
         "dataset": arg.data_class,
         "augment": arg.data_augment,
-        "data_path": arg.data_path,
+        "data_path_train": arg.data_path_train,
+        "data_path_eval": arg.data_path_eval,
         "input_size": arg.input_size,
         "output_dir": arg.output_dir,
         "log_dir": arg.log_dir
@@ -187,7 +210,7 @@ if __name__ == '__main__':
     if arg.wan_db :
         wandb.init(
             # set the wandb project where this run will be logged
-            project="Swin-MAE eval project",
+            project="Swin-UNet eval project",
 
             dir = arg.log_dir,
 
